@@ -1,5 +1,21 @@
-node_modules
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment variables — copy .env.example and fill in your own values
 .env
-dist
-build
+
+# Build output
+dist/
+build/
+
+# Database — local test workflows, not for version control
+db.json
+
+# OS artefacts
 .DS_Store
+Thumbs.db
+
+# Editor directories
+.vscode/
+.idea/

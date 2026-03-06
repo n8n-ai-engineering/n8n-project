@@ -1,77 +1,100 @@
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs');
+const low = require('lowdb');
+const FileSync = require('lowdb/adapters/FileSync');
+const { randomUUID } = require('crypto');
+const OpenAI = require('openai').default;
 const { runWorkflow } = require('./engine');
+
+// ---------- DB ----------
+const adapter = new FileSync(path.join(__dirname, 'db.json'));
+const db = low(adapter);
+db.defaults({ workflows: [] }).write();
+
+// ---------- OpenAI / OpenRouter client ----------
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL,
+});
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ---------- Middleware ----------
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// ---------- Simple file-based storage ----------
-const DATA_FILE = path.join(__dirname, 'workflows.json');
+// ---------- Workflow CRUD ----------
 
-function readWorkflows() {
-  if (!fs.existsSync(DATA_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-
-function writeWorkflows(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
-
-// ---------- Routes ----------
-
-// Save workflow
-app.post('/api/workflow', (req, res) => {
-  const { id, name, nodes, edges } = req.body;
-  if (!id) return res.status(400).json({ error: 'id is required' });
-
-  const workflows = readWorkflows();
-  workflows[id] = {
-    id,
-    name: name || 'Untitled',
-    nodes: nodes || [],
-    edges: edges || [],
-    updatedAt: new Date().toISOString(),
-  };
-  writeWorkflows(workflows);
-  res.json({ success: true, workflow: workflows[id] });
+// List all (metadata only)
+app.get('/api/workflows', (req, res) => {
+  const list = db
+    .get('workflows')
+    .map(({ id, name, createdAt, updatedAt, nodes, edges }) => ({
+      id,
+      name,
+      createdAt,
+      updatedAt,
+      nodeCount: (nodes || []).length,
+      edgeCount: (edges || []).length,
+    }))
+    .value();
+  res.json(list);
 });
 
-// Load workflow
-app.get('/api/workflow/:id', (req, res) => {
-  const workflows = readWorkflows();
-  const wf = workflows[req.params.id];
+// Create new workflow
+app.post('/api/workflows', (req, res) => {
+  const { name } = req.body;
+  const now = new Date().toISOString();
+  const workflow = {
+    id: randomUUID(),
+    name: name || 'Untitled Workflow',
+    nodes: [],
+    edges: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.get('workflows').push(workflow).write();
+  res.status(201).json(workflow);
+});
+
+// Get single workflow (full data)
+app.get('/api/workflows/:id', (req, res) => {
+  const wf = db.get('workflows').find({ id: req.params.id }).value();
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
   res.json(wf);
 });
 
-// List all workflows
-app.get('/api/workflows', (req, res) => {
-  const workflows = readWorkflows();
-  const list = Object.values(workflows).map(({ id, name, updatedAt }) => ({
-    id,
-    name,
-    updatedAt,
-  }));
-  res.json(list);
+// Save nodes/edges (and optionally rename)
+app.put('/api/workflows/:id', (req, res) => {
+  const wf = db.get('workflows').find({ id: req.params.id }).value();
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+
+  const { name, nodes, edges } = req.body;
+  const patch = { updatedAt: new Date().toISOString() };
+  if (name !== undefined) patch.name = name;
+  if (nodes !== undefined) patch.nodes = nodes;
+  if (edges !== undefined) patch.edges = edges;
+
+  db.get('workflows').find({ id: req.params.id }).assign(patch).write();
+  res.json(db.get('workflows').find({ id: req.params.id }).value());
 });
 
-// Run workflow
+// Delete workflow
+app.delete('/api/workflows/:id', (req, res) => {
+  const wf = db.get('workflows').find({ id: req.params.id }).value();
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+  db.get('workflows').remove({ id: req.params.id }).write();
+  res.json({ success: true });
+});
+
+// ---------- Run workflow ----------
 app.post('/api/run', async (req, res) => {
   const { nodes, edges } = req.body;
   if (!nodes || nodes.length === 0) {
     return res.status(400).json({ error: 'No nodes provided' });
   }
-
   try {
     const result = await runWorkflow(nodes, edges || []);
     res.json(result);
@@ -80,59 +103,93 @@ app.post('/api/run', async (req, res) => {
   }
 });
 
-// AI Config generator (mock — swap for real OpenAI later)
-app.post('/api/ai-config', (req, res) => {
+// ---------- AI Agent (real chat completion) ----------
+app.post('/api/ai-agent', async (req, res) => {
+  const {
+    prompt = '',
+    model = 'gpt-4o-mini',
+    system = 'You are a helpful assistant.',
+  } = req.body;
+
+  if (!prompt.trim()) {
+    return res.status(400).json({ error: 'Prompt is required' });
+  }
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.7,
+    });
+    const output = completion.choices[0]?.message?.content?.trim() ?? '';
+    return res.json({ output });
+  } catch (err) {
+    console.error('[ai-agent]', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------- AI Config (OpenRouter free model) ----------
+app.post('/api/ai-config', async (req, res) => {
   const { prompt = '' } = req.body;
-  const lower = prompt.toLowerCase();
-
-  if (lower.includes('weather') || lower.includes('погод')) {
-    return res.json({
-      url: 'https://api.open-meteo.com/v1/forecast?latitude=55.75&longitude=37.61&hourly=temperature_2m&forecast_days=1',
-      method: 'GET',
-      headers: '{}',
-      body: '',
-      description: 'Получить прогноз погоды для Москвы (Open-Meteo, бесплатно)',
-    });
+  if (!prompt.trim()) {
+    return res.status(400).json({ error: 'Prompt is required' });
   }
 
-  if (lower.includes('telegram')) {
-    return res.json({
-      url: 'https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage',
-      method: 'POST',
-      headers: '{"Content-Type": "application/json"}',
-      body: '{"chat_id": "<CHAT_ID>", "text": "Hello from n8n-alt!"}',
-      description: 'Отправить сообщение через Telegram Bot API',
-    });
-  }
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are an API expert for a workflow automation tool (n8n alternative).' +
+            'Your goal is to generate a precise HTTP configuration JSON based on user intent.' +
+            'CRITICAL RULES:'+
+            '1. Return ONLY raw JSON. No markdown, no explanations.' +
+            '2. Structure: { "url": string, "method": "GET" | "POST" | "PUT" | "DELETE", "headers": string (JSON), "body": string (JSON), "description": string }.' +
+            '3. For GET requests, parameters MUST be in the URL query string, NOT in the body. Body must be empty "{}".' +
 
-  if (lower.includes('vk') || lower.includes('вконтакте') || lower.includes('вк')) {
-    return res.json({
-      url: 'https://api.vk.com/method/wall.post',
-      method: 'POST',
-      headers: '{"Content-Type": "application/x-www-form-urlencoded"}',
-      body: 'owner_id=<USER_ID>&message=Hello+from+n8n-alt!&access_token=<ACCESS_TOKEN>&v=5.131',
-      description: 'Опубликовать запись на стене ВКонтакте',
+            'KNOWN APIs (Use these exact patterns):' +
+            '- OpenMeteo Weather: https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true (Method: GET)' +
+            '- CoinGecko Price: https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies={currency} (Method: GET)' +
+            '- Telegram Message: https://api.telegram.org/bot{token}/sendMessage (Method: POST, Body: {"chat_id": "...", "text": "..."})' +
+            '- VK Wall Post: https://api.vk.com/method/wall.post?owner_id={id}&message={msg}&access_token={token}&v=5.131 (Method: POST)' +
+            'If the user asks for something else, use your best knowledge but prefer official documentation patterns.',
+        },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.2,
     });
-  }
 
-  if (lower.includes('github')) {
+    const raw = completion.choices[0]?.message?.content?.trim() ?? '';
+    let config;
+    try {
+      config = JSON.parse(raw);
+    } catch {
+      return res.status(502).json({ error: 'AI returned invalid JSON', raw });
+    }
+
     return res.json({
-      url: 'https://api.github.com/repos/<OWNER>/<REPO>/issues',
-      method: 'GET',
-      headers: '{"Authorization": "Bearer <YOUR_TOKEN>", "Accept": "application/vnd.github+json"}',
-      body: '',
-      description: 'Получить список issues из GitHub репозитория',
+      url: config.url || '',
+      method: (config.method || 'GET').toUpperCase(),
+      headers:
+        typeof config.headers === 'string'
+          ? config.headers
+          : JSON.stringify(config.headers ?? {}),
+      body:
+        typeof config.body === 'string'
+          ? config.body
+          : JSON.stringify(config.body ?? ''),
+      description: config.description || '',
     });
+  } catch (err) {
+    console.error('[ai-config]', err.message);
+    return res.status(500).json({ error: err.message });
   }
-
-  // Default fallback
-  return res.json({
-    url: 'https://jsonplaceholder.typicode.com/posts/1',
-    method: 'GET',
-    headers: '{}',
-    body: '',
-    description: 'Тестовый GET-запрос (JSONPlaceholder)',
-  });
 });
 
 // ---------- Start server ----------

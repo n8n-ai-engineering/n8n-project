@@ -115,7 +115,7 @@ export default function HttpNode({ id, data, selected }) {
           <div>
             <label className="block text-xs text-slate-400 mb-1 font-medium">URL</label>
             <input
-              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono placeholder-slate-600 focus:outline-none focus:border-sky-500"
+              className="nodrag w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono placeholder-slate-600 focus:outline-none focus:border-sky-500"
               placeholder="https://api.example.com/endpoint"
               value={data.url || ''}
               onChange={(e) => updateData('url', e.target.value)}
@@ -126,7 +126,7 @@ export default function HttpNode({ id, data, selected }) {
           <div>
             <label className="block text-xs text-slate-400 mb-1 font-medium">Method</label>
             <select
-              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+              className="nodrag w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
               value={data.method || 'GET'}
               onChange={(e) => updateData('method', e.target.value)}
             >
@@ -140,7 +140,7 @@ export default function HttpNode({ id, data, selected }) {
           <div>
             <label className="block text-xs text-slate-400 mb-1 font-medium">Headers (JSON)</label>
             <textarea
-              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono placeholder-slate-600 focus:outline-none focus:border-sky-500 resize-none"
+              className="nodrag w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono placeholder-slate-600 focus:outline-none focus:border-sky-500 resize-none"
               placeholder='{"Authorization": "Bearer token"}'
               rows={2}
               value={data.headers || '{}'}
@@ -152,7 +152,7 @@ export default function HttpNode({ id, data, selected }) {
           <div>
             <label className="block text-xs text-slate-400 mb-1 font-medium">Body (JSON)</label>
             <textarea
-              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono placeholder-slate-600 focus:outline-none focus:border-sky-500 resize-none"
+              className="nodrag w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono placeholder-slate-600 focus:outline-none focus:border-sky-500 resize-none"
               placeholder='{"key": "value"}'
               rows={3}
               value={data.body || ''}
@@ -168,7 +168,7 @@ export default function HttpNode({ id, data, selected }) {
             </label>
             <div className="flex gap-2">
               <input
-                className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-500"
+                className="nodrag flex-1 bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-500"
                 placeholder="e.g. get weather for Moscow"
                 value={aiPrompt}
                 onChange={(e) => setAiPrompt(e.target.value)}

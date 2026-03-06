@@ -1,5 +1,18 @@
 const axios = require('axios');
 const vm = require('vm');
+const OpenAI = require('openai').default;
+
+// Lazy singleton — env vars are loaded by index.js before engine is first used
+let _openai = null;
+function getOpenAI() {
+  if (!_openai) {
+    _openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+      baseURL: process.env.OPENAI_BASE_URL,
+    });
+  }
+  return _openai;
+}
 
 /**
  * Build an adjacency map: sourceNodeId -> [targetNodeId, ...]
@@ -69,10 +82,23 @@ async function executeNode(node, input) {
     }
 
     case 'httpNode': {
-      const url = data.url || '';
+      const url = resolveVariables(data.url || '', input);
       const method = (data.method || 'GET').toLowerCase();
       const headers = parseJsonSafe(data.headers, {});
-      const body = parseJsonSafe(data.body, undefined);
+
+      // For JSON bodies: parse the template first, resolve variables inside the
+      // object tree, then let axios re-serialise it. This guarantees that
+      // multiline strings, quotes, etc. are properly JSON-escaped.
+      // For non-JSON bodies (form-encoded, plain text): fall back to simple
+      // string replacement.
+      const rawBody = data.body || '';
+      const parsedBodyTemplate = parseJsonSafe(rawBody, null);
+      const body =
+        parsedBodyTemplate !== null
+          ? resolveVariablesInObject(parsedBodyTemplate, input)
+          : rawBody.trim()
+          ? resolveVariables(rawBody, input)
+          : undefined;
 
       if (!url) throw new Error('HTTP Node: URL is required');
 
@@ -118,13 +144,25 @@ async function executeNode(node, input) {
     }
 
     case 'aiTextNode': {
-      const prompt = data.prompt || '';
-      // Mock AI response — swap this out for a real OpenAI call later
-      return {
-        generatedText: `[AI Mock] Processed prompt: "${prompt.slice(0, 80)}..."`,
-        model: 'mock-gpt',
-        timestamp: new Date().toISOString(),
-      };
+      const systemPrompt = data.systemPrompt || 'You are a helpful assistant.';
+      const model = data.model || 'gpt-4o-mini';
+      const rawPrompt = data.prompt || '';
+
+      const userPrompt = resolveVariables(rawPrompt, input);
+
+      if (!userPrompt.trim()) return { text: '', model };
+
+      const completion = await getOpenAI().chat.completions.create({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.7,
+      });
+
+      const text = completion.choices[0]?.message?.content?.trim() ?? '';
+      return { text, model, timestamp: new Date().toISOString() };
     }
 
     default:
@@ -139,6 +177,62 @@ function parseJsonSafe(str, fallback) {
   } catch {
     return fallback;
   }
+}
+
+/**
+ * Replace every {{input.path.to.value}} token in `template` with the
+ * corresponding value from `inputData`.
+ *
+ * The expression inside {{ }} must start with "input." — this mirrors how
+ * the previous node's output is exposed to the user.
+ *
+ * Examples:
+ *   inputData = { data: { current_weather: { temperature: 15 } } }
+ *   "Temp is {{input.data.current_weather.temperature}}°C"
+ *     → "Temp is 15°C"
+ *
+ * Unresolvable references are left unchanged so the user can spot them.
+ */
+function resolveVariables(template, inputData) {
+  if (!template || typeof template !== 'string') return template;
+  const context = { input: inputData };
+  return template.replace(/\{\{([^}]+)\}\}/g, (match, expr) => {
+    const keys = expr.trim().split('.');
+    let val = context;
+    for (const key of keys) {
+      if (val == null) return match;
+      val = val[key];
+    }
+    return val !== undefined && val !== null ? String(val) : match;
+  });
+}
+
+/**
+ * Recursively walk a parsed JSON value (object / array / string / primitive)
+ * and call resolveVariables on every string leaf.
+ *
+ * This is the correct way to substitute variables into a JSON body: operate on
+ * the *parsed* object so that the resolved values (e.g. multiline text, strings
+ * with quotes) are re-serialised properly by JSON.stringify / axios — instead
+ * of doing text substitution on the raw JSON string which breaks escaping.
+ *
+ * Example:
+ *   template object : { "text": "{{input.text}}" }
+ *   input.text      : "Hello!\nLine two."
+ *   result object   : { "text": "Hello!\nLine two." }   ← valid JS object
+ *   axios sends     : {"text":"Hello!\nLine two."}       ← valid JSON
+ */
+function resolveVariablesInObject(obj, inputData) {
+  if (typeof obj === 'string') return resolveVariables(obj, inputData);
+  if (Array.isArray(obj)) return obj.map((item) => resolveVariablesInObject(item, inputData));
+  if (obj !== null && typeof obj === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      out[k] = resolveVariablesInObject(v, inputData);
+    }
+    return out;
+  }
+  return obj; // number, boolean, null — leave as-is
 }
 
 /**

@@ -1,77 +1,167 @@
-# FlowForge — Self-Hosted Workflow Automation
+# FlowForge — Low-code платформа для автоматизации процессов
 
-A production-ready n8n alternative built with Node.js, React, and React Flow.
+> Учебный проект — аналог n8n с интегрированным ИИ-ассистентом.
 
-## Quick Start
+---
+
+## Описание
+
+**FlowForge** — это веб-приложение для визуального построения и запуска автоматизированных рабочих процессов (workflows). Пользователь соединяет узлы на холсте (drag-and-drop), настраивает параметры каждого узла, а сервер выполняет цепочку автоматически, передавая данные от узла к узлу.
+
+Ключевое отличие от классических инструментов — встроенный **ИИ-ассистент** на базе OpenRouter, который умеет:
+- генерировать конфигурацию HTTP-запроса по текстовому описанию;
+- выступать агентом в цепочке: получить данные → обработать ИИ → отправить результат.
+
+---
+
+## Технологический стек
+
+| Часть | Технологии |
+|---|---|
+| **Бэкенд** | Node.js 18, Express 4, lowdb (JSON-хранилище), OpenAI SDK |
+| **Фронтенд** | React 18, React Flow 11, Tailwind CSS, Vite |
+| **Маршрутизация** | React Router DOM v6 |
+| **ИИ** | OpenRouter API (модель `gpt-4o-mini`, бесплатная `gemini-2.0-flash`) |
+| **Запуск** | concurrently (одна команда запускает сервер и клиент) |
+
+---
+
+## Ключевые возможности
+
+- **Дашборд рабочих процессов** — создание, переименование и удаление воркфлоу.
+- **Визуальный редактор** на базе React Flow: drag-and-drop узлов, соединение стрелками.
+- **Исполнение графов на сервере** — движок обходит граф в топологическом порядке и последовательно выполняет узлы, передавая выход каждого как вход следующему.
+- **Интерполяция переменных** — в любом поле можно писать `{{input.data.field}}`, и значение автоматически подставится из выхода предыдущего узла.
+- **ИИ-конфигуратор HTTP-узла** — введите описание запроса на русском, нажмите «Generate» — поля URL, метод, тело заполнятся автоматически.
+- **AI Agent узел** — узел-агент принимает системный промпт, пользовательский промпт с переменными, выбор модели и возвращает сгенерированный текст в цепочку.
+- **Удаление узлов/рёбер** — клавиши `Delete` / `Backspace` или кнопка «Delete» в тулбаре.
+
+---
+
+## Типы узлов
+
+| Узел | Категория | Описание |
+|---|---|---|
+| **Start** | Триггер | Точка входа воркфлоу |
+| **Webhook** | Триггер | Входящий HTTP-вебхук |
+| **HTTP Request** | Действие | GET / POST / PUT / DELETE запрос к любому API |
+| **Code (JS)** | Действие | Произвольный JavaScript в изолированной `vm`-песочнице |
+| **AI Text** | Действие | Запрос к языковой модели через OpenRouter |
+
+---
+
+## Пример цепочки
+
+```
+Start → HTTP (GET погода OpenMeteo) → AI Agent (написать текст о погоде) → HTTP (POST Telegram)
+```
+
+Внутри AI Agent можно написать:
+
+```
+Напиши короткое сообщение о погоде.
+Температура: {{input.data.current_weather.temperature}}°C.
+Стиль: дружелюбный, 2 предложения.
+```
+
+В HTTP-узле Telegram поле `body`:
+
+```json
+{"chat_id": "ВАШ_CHAT_ID", "text": "{{input.text}}"}
+```
+
+---
+
+## Инструкция по запуску
+
+### 1. Клонировать репозиторий
 
 ```bash
-# 1. Install all dependencies (root + server + client)
-npm run install:all
+git clone https://github.com/ВАШ_ЛОГИН/n8n-project.git
+cd n8n-project
+```
 
-# 2. Start both server and client in dev mode
+### 2. Настроить переменные окружения
+
+```bash
+cd server
+cp .env.example .env
+```
+
+Откройте файл `server/.env` и вставьте свой API-ключ:
+
+```
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+OPENAI_API_KEY=sk-or-v1-ВАШ_КЛЮЧ
+PORT=3001
+```
+
+> Бесплатный ключ OpenRouter: https://openrouter.ai/keys
+
+### 3. Установить зависимости
+
+```bash
+cd ..           # вернуться в корень проекта
+npm run install:all
+```
+
+Эта команда запустит `npm install` последовательно в корне, в `/server` и в `/client`.
+
+### 4. Запустить проект
+
+```bash
 npm run dev
 ```
 
-- **Frontend:** http://localhost:5173
-- **Backend API:** http://localhost:3001
+| Адрес | Сервис |
+|---|---|
+| http://localhost:5173 | Фронтенд (React) |
+| http://localhost:3001 | Бэкенд API (Express) |
 
-## Architecture
+---
+
+## Структура проекта
 
 ```
 n8n-project/
+├── package.json            # Корневой — скрипты dev, install:all
+├── .env.example            # (нет, .env.example лежит в server/)
 ├── server/
-│   ├── index.js        # Express API (save/load workflows, /run, /ai-config)
-│   ├── engine.js       # Execution engine (graph traversal + node runners)
-│   └── workflows.json  # Local file storage (auto-created)
+│   ├── index.js            # Express: CRUD воркфлоу, /api/run, /api/ai-agent
+│   ├── engine.js           # Движок: обход графа, выполнение узлов, интерполяция
+│   ├── db.json             # Локальная БД (gitignore'd)
+│   └── .env.example        # Шаблон переменных окружения
 └── client/
     └── src/
-        ├── App.jsx                     # Main editor (React Flow canvas)
-        ├── components/Sidebar.jsx      # Draggable node library
+        ├── App.jsx                  # Роутер (Dashboard / Editor)
+        ├── pages/
+        │   ├── Dashboard.jsx        # Список воркфлоу
+        │   └── Editor.jsx           # Редактор (React Flow + тулбар)
+        ├── components/
+        │   └── Sidebar.jsx          # Библиотека узлов (drag-and-drop)
         └── nodes/
-            ├── StartNode.jsx           # Trigger — source handle only
-            ├── WebhookNode.jsx         # Trigger — source handle only
-            ├── HttpNode.jsx            # HTTP Request + AI config button
-            ├── CodeNode.jsx            # JS sandbox node
-            └── AiTextNode.jsx          # AI text generation (mock)
+            ├── StartNode.jsx
+            ├── WebhookNode.jsx
+            ├── HttpNode.jsx         # + ИИ-конфигуратор
+            ├── CodeNode.jsx
+            └── AiTextNode.jsx       # AI Agent узел
 ```
 
-## Node Types
+---
 
-| Node | Type | Handles | Description |
-|------|------|---------|-------------|
-| Start | Trigger | → output | Starts the workflow |
-| Webhook | Trigger | → output | Receives external HTTP calls |
-| HTTP Request | Action | input ← → output | Makes HTTP requests (GET/POST/PUT/DELETE) |
-| Code (JS) | Action | input ← → output | Executes JavaScript via Node.js `vm` |
-| AI Text | Action | input ← → output | Generates text (mock, swap for OpenAI) |
+## API сервера
 
-## Data Flow
+| Метод | Путь | Описание |
+|---|---|---|
+| `GET` | `/api/workflows` | Список всех воркфлоу |
+| `POST` | `/api/workflows` | Создать новый |
+| `GET` | `/api/workflows/:id` | Получить воркфлоу (с узлами) |
+| `PUT` | `/api/workflows/:id` | Сохранить узлы/рёбра/название |
+| `DELETE` | `/api/workflows/:id` | Удалить |
+| `POST` | `/api/run` | Запустить воркфлоу |
+| `POST` | `/api/ai-agent` | Запрос к языковой модели |
+| `POST` | `/api/ai-config` | ИИ-генерация конфигурации HTTP-узла |
 
-Each node receives the **entire output** of the previous node as `input`.
+---
 
-**HTTP Node output:**
-```json
-{ "data": {...}, "status": 200, "headers": {...} }
-```
-
-**Code Node example:**
-```js
-// input = output from previous HTTP node
-return { temp: input.data.hourly.temperature_2m[0] };
-```
-
-## AI Config Feature (HTTP Node)
-
-Type a prompt in the "Ask AI" field inside any HTTP node:
-- `"weather"` → fills in Open-Meteo API for Moscow
-- `"telegram"` → fills in Telegram Bot API
-- `"vk"` → fills in VK API wall.post
-- `"github"` → fills in GitHub Issues API
-
-To connect real OpenAI: replace the `/api/ai-config` handler in `server/index.js`.
-
-## Presets (Sidebar)
-
-Drag from the **Presets** section to drop an HTTP node pre-filled with:
-- **VK Wall Post** — VK API `wall.post`
-- **Telegram Message** — Telegram Bot `sendMessage`
+*Проект выполнен в рамках учебной практики. Стек подобран для демонстрации принципов low-code автоматизации, серверного исполнения графов и интеграции ИИ в прикладные системы.*

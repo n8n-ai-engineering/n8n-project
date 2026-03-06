@@ -72,7 +72,7 @@ export default function CodeNode({ id, data, selected }) {
           </label>
           <div className="relative">
             <textarea
-              className="w-full bg-slate-950 border border-slate-600 rounded-lg px-3 py-2.5 text-xs text-amber-100 font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500 resize-y min-h-[140px]"
+              className="nodrag w-full bg-slate-950 border border-slate-600 rounded-lg px-3 py-2.5 text-xs text-amber-100 font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500 resize-y min-h-[140px]"
               placeholder={DEFAULT_CODE}
               value={data.code || ''}
               onChange={(e) => updateCode(e.target.value)}
