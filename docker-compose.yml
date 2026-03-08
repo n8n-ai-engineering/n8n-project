@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+
+  server:
+    build: ./server
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      DATA_DIR: /data
+      # API credentials can also be set via the in-app Settings UI after first boot.
+      # To pre-load them, create server/.env from server/.env.example and uncomment:
+      # OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+    env_file:
+      - path: ./server/.env
+        required: false
+    volumes:
+      - flowforge-data:/data
+    restart: unless-stopped
+
+  client:
+    build: ./client
+    ports:
+      - "5173:80"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  flowforge-data:
+    driver: local
