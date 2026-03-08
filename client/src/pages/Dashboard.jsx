@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
@@ -11,7 +11,10 @@ import {
   AlertCircle,
   Clock,
   Workflow,
+  Settings,
+  Upload,
 } from 'lucide-react';
+import SettingsModal from '../components/SettingsModal.jsx';
 
 function formatDate(iso) {
   if (!iso) return '—';
@@ -92,6 +95,9 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const importRef = useRef(null);
 
   const fetchWorkflows = useCallback(async () => {
     try {
@@ -124,8 +130,31 @@ export default function Dashboard() {
     setWorkflows((prev) => prev.filter((w) => w.id !== id));
   };
 
+  const handleImportFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    setError('');
+    try {
+      const wf = JSON.parse(await file.text());
+      const { data: created } = await axios.post('/api/workflows', {
+        name: wf.name || file.name.replace(/\.json$/i, '') || 'Imported Workflow',
+      });
+      await axios.put(`/api/workflows/${created.id}`, {
+        nodes: wf.nodes || [],
+        edges: wf.edges || [],
+      });
+      navigate(`/editor/${created.id}`);
+    } catch {
+      setError('Import failed. Make sure the file is a valid FlowForge JSON export.');
+      setImporting(false);
+    }
+    e.target.value = '';
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
       {/* Top bar */}
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
@@ -137,18 +166,42 @@ export default function Dashboard() {
             <span className="text-slate-600 text-sm hidden sm:block">Workflow Automation</span>
           </div>
 
-          <button
-            onClick={handleCreate}
-            disabled={creating}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-sm font-semibold text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed shadow-lg shadow-sky-900/30"
-          >
-            {creating ? (
-              <Loader2 size={15} className="animate-spin" />
-            ) : (
-              <Plus size={15} />
-            )}
-            New Workflow
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="p-2 rounded-xl hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
+              title="API Settings"
+            >
+              <Settings size={18} />
+            </button>
+
+            {/* Hidden file input for import */}
+            <input
+              ref={importRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={handleImportFile}
+            />
+            <button
+              onClick={() => importRef.current?.click()}
+              disabled={importing}
+              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-sm font-medium text-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Import workflow from JSON file"
+            >
+              {importing ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+              Import
+            </button>
+
+            <button
+              onClick={handleCreate}
+              disabled={creating}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-sm font-semibold text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed shadow-lg shadow-sky-900/30"
+            >
+              {creating ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
+              New Workflow
+            </button>
+          </div>
         </div>
       </header>
 

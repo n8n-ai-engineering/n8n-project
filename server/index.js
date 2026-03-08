@@ -1,23 +1,12 @@
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
-const low = require('lowdb');
-const FileSync = require('lowdb/adapters/FileSync');
 const { randomUUID } = require('crypto');
-const OpenAI = require('openai').default;
+
+const db = require('./db');
+const { getOpenAIClient } = require('./openai-client');
 const { runWorkflow } = require('./engine');
-
-// ---------- DB ----------
-const adapter = new FileSync(path.join(__dirname, 'db.json'));
-const db = low(adapter);
-db.defaults({ workflows: [] }).write();
-
-// ---------- OpenAI / OpenRouter client ----------
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL,
-});
+const { initAllJobs, registerWorkflowJobs, cancelWorkflowJobs } = require('./scheduler');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -25,9 +14,31 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// ---------- Workflow CRUD ----------
+// ─────────────────────────────────────────────
+// Settings
+// ─────────────────────────────────────────────
 
-// List all (metadata only)
+app.get('/api/settings', (req, res) => {
+  const settings = db.get('settings').value() || {};
+  res.json({
+    apiKey: settings.apiKey || '',
+    baseUrl: settings.baseUrl || '',
+  });
+});
+
+app.post('/api/settings', (req, res) => {
+  const { apiKey, baseUrl } = req.body;
+  const patch = {};
+  if (apiKey !== undefined) patch.apiKey = apiKey;
+  if (baseUrl !== undefined) patch.baseUrl = baseUrl;
+  db.set('settings', { ...db.get('settings').value(), ...patch }).write();
+  res.json({ success: true });
+});
+
+// ─────────────────────────────────────────────
+// Workflow CRUD
+// ─────────────────────────────────────────────
+
 app.get('/api/workflows', (req, res) => {
   const list = db
     .get('workflows')
@@ -43,7 +54,6 @@ app.get('/api/workflows', (req, res) => {
   res.json(list);
 });
 
-// Create new workflow
 app.post('/api/workflows', (req, res) => {
   const { name } = req.body;
   const now = new Date().toISOString();
@@ -59,14 +69,12 @@ app.post('/api/workflows', (req, res) => {
   res.status(201).json(workflow);
 });
 
-// Get single workflow (full data)
 app.get('/api/workflows/:id', (req, res) => {
   const wf = db.get('workflows').find({ id: req.params.id }).value();
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
   res.json(wf);
 });
 
-// Save nodes/edges (and optionally rename)
 app.put('/api/workflows/:id', (req, res) => {
   const wf = db.get('workflows').find({ id: req.params.id }).value();
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
@@ -78,18 +86,48 @@ app.put('/api/workflows/:id', (req, res) => {
   if (edges !== undefined) patch.edges = edges;
 
   db.get('workflows').find({ id: req.params.id }).assign(patch).write();
+
+  // Re-register cron jobs in case schedule nodes changed
+  registerWorkflowJobs(req.params.id);
+
   res.json(db.get('workflows').find({ id: req.params.id }).value());
 });
 
-// Delete workflow
 app.delete('/api/workflows/:id', (req, res) => {
   const wf = db.get('workflows').find({ id: req.params.id }).value();
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+
+  cancelWorkflowJobs(req.params.id);
   db.get('workflows').remove({ id: req.params.id }).write();
   res.json({ success: true });
 });
 
-// ---------- Run workflow ----------
+// ─────────────────────────────────────────────
+// Webhook trigger  POST /webhook/:workflowId
+// ─────────────────────────────────────────────
+
+app.post('/webhook/:workflowId', async (req, res) => {
+  const { workflowId } = req.params;
+  const wf = db.get('workflows').find({ id: workflowId }).value();
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+
+  const hasWebhook = (wf.nodes || []).some((n) => n.type === 'webhookNode');
+  if (!hasWebhook) {
+    return res.status(400).json({ error: 'Workflow has no Webhook node' });
+  }
+
+  try {
+    const result = await runWorkflow(wf.nodes, wf.edges, { webhookPayload: req.body });
+    res.json({ success: true, result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// Run workflow (from UI)
+// ─────────────────────────────────────────────
+
 app.post('/api/run', async (req, res) => {
   const { nodes, edges } = req.body;
   if (!nodes || nodes.length === 0) {
@@ -103,20 +141,16 @@ app.post('/api/run', async (req, res) => {
   }
 });
 
-// ---------- AI Agent (real chat completion) ----------
-app.post('/api/ai-agent', async (req, res) => {
-  const {
-    prompt = '',
-    model = 'gpt-4o-mini',
-    system = 'You are a helpful assistant.',
-  } = req.body;
+// ─────────────────────────────────────────────
+// AI Agent
+// ─────────────────────────────────────────────
 
-  if (!prompt.trim()) {
-    return res.status(400).json({ error: 'Prompt is required' });
-  }
+app.post('/api/ai-agent', async (req, res) => {
+  const { prompt = '', model = 'gpt-4o-mini', system = 'You are a helpful assistant.' } = req.body;
+  if (!prompt.trim()) return res.status(400).json({ error: 'Prompt is required' });
 
   try {
-    const completion = await openai.chat.completions.create({
+    const completion = await getOpenAIClient().chat.completions.create({
       model,
       messages: [
         { role: 'system', content: system },
@@ -132,15 +166,16 @@ app.post('/api/ai-agent', async (req, res) => {
   }
 });
 
-// ---------- AI Config (OpenRouter free model) ----------
+// ─────────────────────────────────────────────
+// AI Config (HTTP node assistant)
+// ─────────────────────────────────────────────
+
 app.post('/api/ai-config', async (req, res) => {
   const { prompt = '' } = req.body;
-  if (!prompt.trim()) {
-    return res.status(400).json({ error: 'Prompt is required' });
-  }
+  if (!prompt.trim()) return res.status(400).json({ error: 'Prompt is required' });
 
   try {
-    const completion = await openai.chat.completions.create({
+    const completion = await getOpenAIClient().chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         {
@@ -148,17 +183,15 @@ app.post('/api/ai-config', async (req, res) => {
           content:
             'You are an API expert for a workflow automation tool (n8n alternative).' +
             'Your goal is to generate a precise HTTP configuration JSON based on user intent.' +
-            'CRITICAL RULES:'+
+            'CRITICAL RULES:' +
             '1. Return ONLY raw JSON. No markdown, no explanations.' +
-            '2. Structure: { "url": string, "method": "GET" | "POST" | "PUT" | "DELETE", "headers": string (JSON), "body": string (JSON), "description": string }.' +
+            '2. Structure: { "url": string, "method": "GET"|"POST"|"PUT"|"DELETE", "headers": string (JSON), "body": string (JSON), "description": string }.' +
             '3. For GET requests, parameters MUST be in the URL query string, NOT in the body. Body must be empty "{}".' +
-
-            'KNOWN APIs (Use these exact patterns):' +
-            '- OpenMeteo Weather: https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true (Method: GET)' +
-            '- CoinGecko Price: https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies={currency} (Method: GET)' +
-            '- Telegram Message: https://api.telegram.org/bot{token}/sendMessage (Method: POST, Body: {"chat_id": "...", "text": "..."})' +
-            '- VK Wall Post: https://api.vk.com/method/wall.post?owner_id={id}&message={msg}&access_token={token}&v=5.131 (Method: POST)' +
-            'If the user asks for something else, use your best knowledge but prefer official documentation patterns.',
+            'KNOWN APIs:' +
+            '- OpenMeteo Weather: https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true (GET)' +
+            '- CoinGecko Price: https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies={currency} (GET)' +
+            '- Telegram: https://api.telegram.org/bot{token}/sendMessage (POST, body: {"chat_id":"...","text":"..."})' +
+            '- VK Wall: https://api.vk.com/method/wall.post?owner_id={id}&message={msg}&access_token={token}&v=5.131 (POST)',
         },
         { role: 'user', content: prompt },
       ],
@@ -177,13 +210,9 @@ app.post('/api/ai-config', async (req, res) => {
       url: config.url || '',
       method: (config.method || 'GET').toUpperCase(),
       headers:
-        typeof config.headers === 'string'
-          ? config.headers
-          : JSON.stringify(config.headers ?? {}),
+        typeof config.headers === 'string' ? config.headers : JSON.stringify(config.headers ?? {}),
       body:
-        typeof config.body === 'string'
-          ? config.body
-          : JSON.stringify(config.body ?? ''),
+        typeof config.body === 'string' ? config.body : JSON.stringify(config.body ?? ''),
       description: config.description || '',
     });
   } catch (err) {
@@ -192,7 +221,11 @@ app.post('/api/ai-config', async (req, res) => {
   }
 });
 
-// ---------- Start server ----------
+// ─────────────────────────────────────────────
+// Start
+// ─────────────────────────────────────────────
+
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
+  initAllJobs();
 });

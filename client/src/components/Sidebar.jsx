@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Users,
   GripVertical,
+  Clock,
 } from 'lucide-react';
 
 const SECTIONS = [
@@ -29,6 +30,14 @@ const SECTIONS = [
         color: 'text-violet-400',
         bg: 'bg-violet-900/30 border-violet-700/50',
         defaultData: {},
+      },
+      {
+        type: 'scheduleNode',
+        label: 'Schedule',
+        icon: Clock,
+        color: 'text-teal-400',
+        bg: 'bg-teal-900/30 border-teal-700/50',
+        defaultData: { preset: 'every_hour', cronExpression: '' },
       },
     ],
   },

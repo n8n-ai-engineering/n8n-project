@@ -9,8 +9,9 @@ node_modules/
 dist/
 build/
 
-# Database — local test workflows, not for version control
+# Database — local workflows and stored API keys, never commit these
 db.json
+server/db.json
 
 # OS artefacts
 .DS_Store

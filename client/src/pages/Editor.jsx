@@ -26,6 +26,7 @@ import {
   ArrowLeft,
   Pencil,
   Check,
+  Download,
 } from 'lucide-react';
 
 import Sidebar from '../components/Sidebar.jsx';
@@ -34,10 +35,12 @@ import HttpNode from '../nodes/HttpNode.jsx';
 import CodeNode from '../nodes/CodeNode.jsx';
 import WebhookNode from '../nodes/WebhookNode.jsx';
 import AiTextNode from '../nodes/AiTextNode.jsx';
+import ScheduleNode from '../nodes/ScheduleNode.jsx';
 
 const nodeTypes = {
   startNode: StartNode,
   webhookNode: WebhookNode,
+  scheduleNode: ScheduleNode,
   httpNode: HttpNode,
   codeNode: CodeNode,
   aiTextNode: AiTextNode,
@@ -289,6 +292,17 @@ function FlowEditor() {
     }
   }, [id, workflowName, nodes, edges]);
 
+  const handleExport = useCallback(() => {
+    const payload = { name: workflowName, nodes, edges };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${workflowName.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [workflowName, nodes, edges]);
+
   // Loading / error states
   if (loadingWorkflow) {
     return (
@@ -340,6 +354,14 @@ function FlowEditor() {
                 {saveMsg}
               </span>
             )}
+            <button
+              onClick={handleExport}
+              title="Export workflow as JSON"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-medium text-slate-200 transition-colors"
+            >
+              <Download size={14} />
+              <span className="hidden sm:inline">Export</span>
+            </button>
             <button
               onClick={handleDeleteSelected}
               disabled={!hasSelection}

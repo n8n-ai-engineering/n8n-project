@@ -1,18 +1,6 @@
 const axios = require('axios');
 const vm = require('vm');
-const OpenAI = require('openai').default;
-
-// Lazy singleton — env vars are loaded by index.js before engine is first used
-let _openai = null;
-function getOpenAI() {
-  if (!_openai) {
-    _openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      baseURL: process.env.OPENAI_BASE_URL,
-    });
-  }
-  return _openai;
-}
+const { getOpenAIClient } = require('./openai-client');
 
 /**
  * Build an adjacency map: sourceNodeId -> [targetNodeId, ...]
@@ -62,8 +50,9 @@ function getExecutionOrder(startNodeId, graph, nodes) {
 
 /**
  * Execute a single node given input from the previous node.
+ * @param {object} options  - e.g. { webhookPayload } injected by the webhook route
  */
-async function executeNode(node, input) {
+async function executeNode(node, input, options = {}) {
   const type = node.type;
   const data = node.data || {};
 
@@ -72,12 +61,17 @@ async function executeNode(node, input) {
       return { triggered: true, timestamp: new Date().toISOString() };
     }
 
+    case 'scheduleNode': {
+      return { triggered: true, timestamp: new Date().toISOString(), source: 'schedule' };
+    }
+
     case 'webhookNode': {
+      // When triggered via POST /webhook/:id the real request body is injected
       return {
         triggered: true,
         timestamp: new Date().toISOString(),
         source: 'webhook',
-        payload: data.webhookPayload || {},
+        payload: options.webhookPayload || {},
       };
     }
 
@@ -152,7 +146,7 @@ async function executeNode(node, input) {
 
       if (!userPrompt.trim()) return { text: '', model };
 
-      const completion = await getOpenAI().chat.completions.create({
+      const completion = await getOpenAIClient().chat.completions.create({
         model,
         messages: [
           { role: 'system', content: systemPrompt },
@@ -239,7 +233,7 @@ function resolveVariablesInObject(obj, inputData) {
  * Main entry point: execute the entire workflow graph.
  * Returns an object with per-node results and the final output.
  */
-async function runWorkflow(nodes, edges) {
+async function runWorkflow(nodes, edges, options = {}) {
   if (!nodes || nodes.length === 0) {
     throw new Error('No nodes in workflow');
   }
@@ -254,7 +248,7 @@ async function runWorkflow(nodes, edges) {
 
   for (const node of executionOrder) {
     try {
-      const output = await executeNode(node, currentInput);
+      const output = await executeNode(node, currentInput, options);
       nodeResults[node.id] = {
         nodeId: node.id,
         nodeType: node.type,

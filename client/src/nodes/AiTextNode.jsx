@@ -3,9 +3,16 @@ import { Handle, Position, useReactFlow } from 'reactflow';
 import { BrainCircuit, ChevronDown, ChevronUp, Play, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
 import axios from 'axios';
 
-const MODELS = [
-  { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
-  { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' },
+// Suggestions shown in the combobox dropdown; user can also type any custom model ID
+const MODEL_SUGGESTIONS = [
+  'gpt-4o-mini',
+  'gpt-4o',
+  'gpt-3.5-turbo',
+  'deepseek/deepseek-r1:free',
+  'deepseek/deepseek-chat:free',
+  'google/gemini-2.0-flash-exp:free',
+  'anthropic/claude-3-haiku',
+  'meta-llama/llama-3.1-8b-instruct:free',
 ];
 
 const DEFAULT_SYSTEM = 'You are a helpful assistant.';
@@ -51,7 +58,7 @@ export default function AiTextNode({ id, data, selected }) {
     }
   }, [data]);
 
-  const modelLabel = MODELS.find((m) => m.value === (data.model || 'gpt-4o-mini'))?.label ?? data.model;
+  const currentModel = data.model || 'gpt-4o-mini';
 
   return (
     <div
@@ -80,8 +87,8 @@ export default function AiTextNode({ id, data, selected }) {
           <p className="text-sm font-semibold text-slate-100 truncate">{data.label || 'AI Text'}</p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-pink-400/70 bg-pink-900/30 px-2 py-0.5 rounded font-mono">
-            {modelLabel}
+          <span className="text-xs text-pink-400/70 bg-pink-900/30 px-2 py-0.5 rounded font-mono max-w-[120px] truncate">
+            {currentModel}
           </span>
           {expanded ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
         </div>
@@ -98,18 +105,22 @@ export default function AiTextNode({ id, data, selected }) {
       {expanded && (
         <div className="px-4 pb-4 border-t border-slate-700 pt-3 space-y-3">
 
-          {/* Model */}
+          {/* Model — combobox: pick a suggestion or type any custom model ID */}
           <div>
             <label className="block text-xs text-slate-400 mb-1 font-medium">Model</label>
-            <select
-              className="nodrag w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-pink-500"
-              value={data.model || 'gpt-4o-mini'}
+            <input
+              list={`model-list-${id}`}
+              className="nodrag w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-pink-500 placeholder-slate-600"
+              placeholder="gpt-4o-mini"
+              value={currentModel}
               onChange={(e) => updateData('model', e.target.value)}
-            >
-              {MODELS.map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-            </select>
+            />
+            <datalist id={`model-list-${id}`}>
+              {MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
+            </datalist>
+            <p className="text-xs text-slate-600 mt-1">
+              Select a preset or type any OpenRouter model ID
+            </p>
           </div>
 
           {/* System Prompt */}
