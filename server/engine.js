@@ -1,10 +1,9 @@
 const axios = require('axios');
 const vm = require('vm');
+const OpenAI = require('openai').default;
 const { getOpenAIClient } = require('./openai-client');
+const db = require('./db');
 
-/**
- * Build an adjacency map: sourceNodeId -> [targetNodeId, ...]
- */
 function buildGraph(edges) {
   const graph = {};
   for (const edge of edges) {
@@ -14,20 +13,13 @@ function buildGraph(edges) {
   return graph;
 }
 
-/**
- * Find the start node (node with no incoming edges, or type === 'startNode' / 'webhookNode')
- */
 function findStartNodes(nodes, edges) {
   const hasIncoming = new Set(edges.map((e) => e.target));
   const starters = nodes.filter((n) => !hasIncoming.has(n.id));
   if (starters.length > 0) return starters;
-  // Fallback: return first node
   return [nodes[0]];
 }
 
-/**
- * Topological traversal starting from startNode
- */
 function getExecutionOrder(startNodeId, graph, nodes) {
   const order = [];
   const visited = new Set();
@@ -38,25 +30,60 @@ function getExecutionOrder(startNodeId, graph, nodes) {
     if (visited.has(nodeId)) return;
     visited.add(nodeId);
     order.push(nodeId);
-    const children = graph[nodeId] || [];
-    for (const child of children) {
-      dfs(child);
-    }
+    for (const child of graph[nodeId] || []) dfs(child);
   }
 
   dfs(startNodeId);
   return order.map((id) => nodeMap[id]).filter(Boolean);
 }
 
+// ─── AI helpers ──────────────────────────────────────────────────────────────
+
 /**
- * Execute a single node given input from the previous node.
- * @param {object} options  - e.g. { webhookPayload } injected by the webhook route
+ * Returns an OpenAI-compatible client.
+ * If the model name starts with "ollama/" we route to the local Ollama server
+ * (which exposes an OpenAI-compatible API at http://localhost:11434/v1).
  */
+function getClientForModel(model) {
+  if (typeof model === 'string' && model.startsWith('ollama/')) {
+    return new OpenAI({ baseURL: 'http://localhost:11434/v1', apiKey: 'ollama' });
+  }
+  return getOpenAIClient();
+}
+
+/**
+ * Strip the "ollama/" prefix to get the raw model name Ollama expects.
+ */
+function resolveModelName(model) {
+  if (typeof model === 'string' && model.startsWith('ollama/')) {
+    return model.slice('ollama/'.length);
+  }
+  return model;
+}
+
+// ─── Memory helpers ───────────────────────────────────────────────────────────
+
+const MAX_HISTORY_ENTRIES = 20; // 10 exchanges (user + assistant each)
+
+function getMemory(sessionId) {
+  const mem = db.get('memory').value() || {};
+  return Array.isArray(mem[sessionId]) ? mem[sessionId] : [];
+}
+
+function saveMemory(sessionId, history) {
+  const mem = db.get('memory').value() || {};
+  mem[sessionId] = history.slice(-MAX_HISTORY_ENTRIES);
+  db.set('memory', mem).write();
+}
+
+// ─── Node executor ────────────────────────────────────────────────────────────
+
 async function executeNode(node, input, options = {}) {
   const type = node.type;
   const data = node.data || {};
 
   switch (type) {
+
     case 'startNode': {
       return { triggered: true, timestamp: new Date().toISOString() };
     }
@@ -66,7 +93,6 @@ async function executeNode(node, input, options = {}) {
     }
 
     case 'webhookNode': {
-      // When triggered via POST /webhook/:id the real request body is injected
       return {
         triggered: true,
         timestamp: new Date().toISOString(),
@@ -75,16 +101,49 @@ async function executeNode(node, input, options = {}) {
       };
     }
 
+    // ── Telegram Trigger ────────────────────────────────────────────────────
+    case 'telegramTriggerNode': {
+      const payload = options.telegramPayload || {};
+      return {
+        triggered: true,
+        timestamp: new Date().toISOString(),
+        source: 'telegram',
+        text: payload.text || '',
+        chat_id: payload.chat_id || '',
+        from: payload.from || {},
+        message_id: payload.message_id || null,
+      };
+    }
+
+    // ── Telegram Action (send message) ──────────────────────────────────────
+    case 'telegramActionNode': {
+      const token = (data.token || '').trim();
+      const chatId = resolveVariables(data.chatId || '', input);
+      const message = resolveVariables(data.message || '', input);
+
+      if (!token) throw new Error('Telegram Action: Bot Token is required');
+      if (!chatId) throw new Error('Telegram Action: Chat ID is required');
+      if (!message.trim()) throw new Error('Telegram Action: Message is empty');
+
+      const response = await axios.post(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        { chat_id: chatId, text: message },
+        { timeout: 10000 }
+      );
+
+      return {
+        sent: true,
+        chat_id: chatId,
+        message_id: response.data?.result?.message_id || null,
+      };
+    }
+
+    // ── HTTP Request ────────────────────────────────────────────────────────
     case 'httpNode': {
       const url = resolveVariables(data.url || '', input);
       const method = (data.method || 'GET').toLowerCase();
       const headers = parseJsonSafe(data.headers, {});
 
-      // For JSON bodies: parse the template first, resolve variables inside the
-      // object tree, then let axios re-serialise it. This guarantees that
-      // multiline strings, quotes, etc. are properly JSON-escaped.
-      // For non-JSON bodies (form-encoded, plain text): fall back to simple
-      // string replacement.
       const rawBody = data.body || '';
       const parsedBodyTemplate = parseJsonSafe(rawBody, null);
       const body =
@@ -96,21 +155,11 @@ async function executeNode(node, input, options = {}) {
 
       if (!url) throw new Error('HTTP Node: URL is required');
 
-      const response = await axios({
-        method,
-        url,
-        headers,
-        data: body,
-        timeout: 15000,
-      });
-
-      return {
-        data: response.data,
-        status: response.status,
-        headers: response.headers,
-      };
+      const response = await axios({ method, url, headers, data: body, timeout: 15000 });
+      return { data: response.data, status: response.status, headers: response.headers };
     }
 
+    // ── Code (JS sandbox) ───────────────────────────────────────────────────
     case 'codeNode': {
       const code = data.code || '';
       if (!code.trim()) return { result: null };
@@ -127,36 +176,70 @@ async function executeNode(node, input, options = {}) {
         result: undefined,
       };
 
-      // Wrap code so `return` works at top level
-      const wrappedCode = `(function() { ${code} })()`;
-
-      const script = new vm.Script(wrappedCode);
+      const script = new vm.Script(`(function() { ${code} })()`);
       const context = vm.createContext(sandbox);
       const output = script.runInContext(context, { timeout: 5000 });
-
       return output !== undefined ? output : { logs };
     }
 
+    // ── AI Agent ─────────────────────────────────────────────────────────────
     case 'aiTextNode': {
       const systemPrompt = data.systemPrompt || 'You are a helpful assistant.';
       const model = data.model || 'gpt-4o-mini';
-      const rawPrompt = data.prompt || '';
-
-      const userPrompt = resolveVariables(rawPrompt, input);
+      const userPrompt = resolveVariables(data.prompt || '', input);
 
       if (!userPrompt.trim()) return { text: '', model };
 
-      const completion = await getOpenAIClient().chat.completions.create({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
+      // Resolve sessionId — supports {{input.chat_id}} interpolation
+      const sessionId = resolveVariables(data.sessionId || '', input).trim();
+
+      // Build messages: system + conversation history + current user message
+      const history = sessionId ? getMemory(sessionId) : [];
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...history,
+        { role: 'user', content: userPrompt },
+      ];
+
+      const client = getClientForModel(model);
+      const completion = await client.chat.completions.create({
+        model: resolveModelName(model),
+        messages,
         temperature: 0.7,
       });
 
       const text = completion.choices[0]?.message?.content?.trim() ?? '';
-      return { text, model, timestamp: new Date().toISOString() };
+
+      // Persist conversation history
+      if (sessionId) {
+        const updated = [
+          ...history,
+          { role: 'user', content: userPrompt },
+          { role: 'assistant', content: text },
+        ];
+        saveMemory(sessionId, updated);
+      }
+
+      return { ...input, text, model, timestamp: new Date().toISOString() };
+    }
+
+    // ── Storage (key-value) ──────────────────────────────────────────────────
+    case 'storageNode': {
+      const operation = (data.operation || 'GET').toUpperCase();
+      const key = resolveVariables(data.key || '', input).trim();
+      const value = resolveVariables(data.value || '', input);
+
+      if (!key) throw new Error('Storage Node: Key is required');
+
+      const storage = db.get('storage').value() || {};
+
+      if (operation === 'SET') {
+        storage[key] = value;
+        db.set('storage', storage).write();
+        return { operation: 'SET', key, value };
+      } else {
+        return { operation: 'GET', key, value: storage[key] ?? null };
+      }
     }
 
     default:
@@ -164,29 +247,13 @@ async function executeNode(node, input, options = {}) {
   }
 }
 
+// ─── Variable resolution ──────────────────────────────────────────────────────
+
 function parseJsonSafe(str, fallback) {
   if (!str || typeof str !== 'string') return fallback;
-  try {
-    return JSON.parse(str);
-  } catch {
-    return fallback;
-  }
+  try { return JSON.parse(str); } catch { return fallback; }
 }
 
-/**
- * Replace every {{input.path.to.value}} token in `template` with the
- * corresponding value from `inputData`.
- *
- * The expression inside {{ }} must start with "input." — this mirrors how
- * the previous node's output is exposed to the user.
- *
- * Examples:
- *   inputData = { data: { current_weather: { temperature: 15 } } }
- *   "Temp is {{input.data.current_weather.temperature}}°C"
- *     → "Temp is 15°C"
- *
- * Unresolvable references are left unchanged so the user can spot them.
- */
 function resolveVariables(template, inputData) {
   if (!template || typeof template !== 'string') return template;
   const context = { input: inputData };
@@ -201,42 +268,21 @@ function resolveVariables(template, inputData) {
   });
 }
 
-/**
- * Recursively walk a parsed JSON value (object / array / string / primitive)
- * and call resolveVariables on every string leaf.
- *
- * This is the correct way to substitute variables into a JSON body: operate on
- * the *parsed* object so that the resolved values (e.g. multiline text, strings
- * with quotes) are re-serialised properly by JSON.stringify / axios — instead
- * of doing text substitution on the raw JSON string which breaks escaping.
- *
- * Example:
- *   template object : { "text": "{{input.text}}" }
- *   input.text      : "Hello!\nLine two."
- *   result object   : { "text": "Hello!\nLine two." }   ← valid JS object
- *   axios sends     : {"text":"Hello!\nLine two."}       ← valid JSON
- */
 function resolveVariablesInObject(obj, inputData) {
   if (typeof obj === 'string') return resolveVariables(obj, inputData);
   if (Array.isArray(obj)) return obj.map((item) => resolveVariablesInObject(item, inputData));
   if (obj !== null && typeof obj === 'object') {
     const out = {};
-    for (const [k, v] of Object.entries(obj)) {
-      out[k] = resolveVariablesInObject(v, inputData);
-    }
+    for (const [k, v] of Object.entries(obj)) out[k] = resolveVariablesInObject(v, inputData);
     return out;
   }
-  return obj; // number, boolean, null — leave as-is
+  return obj;
 }
 
-/**
- * Main entry point: execute the entire workflow graph.
- * Returns an object with per-node results and the final output.
- */
+// ─── Main entry point ─────────────────────────────────────────────────────────
+
 async function runWorkflow(nodes, edges, options = {}) {
-  if (!nodes || nodes.length === 0) {
-    throw new Error('No nodes in workflow');
-  }
+  if (!nodes || nodes.length === 0) throw new Error('No nodes in workflow');
 
   const graph = buildGraph(edges || []);
   const startNodes = findStartNodes(nodes, edges || []);
@@ -266,7 +312,6 @@ async function runWorkflow(nodes, edges, options = {}) {
         status: 'error',
         error: err.message,
       };
-      // Stop chain on error
       break;
     }
   }

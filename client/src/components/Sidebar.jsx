@@ -9,7 +9,18 @@ import {
   Users,
   GripVertical,
   Clock,
+  Send,
+  Database,
 } from 'lucide-react';
+
+function TelegramIcon({ size = 15, className = '' }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+      <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 const SECTIONS = [
   {
@@ -39,6 +50,14 @@ const SECTIONS = [
         bg: 'bg-teal-900/30 border-teal-700/50',
         defaultData: { preset: 'every_hour', cronExpression: '' },
       },
+      {
+        type: 'telegramTriggerNode',
+        label: 'Telegram Trigger',
+        icon: TelegramIcon,
+        color: 'text-cyan-400',
+        bg: 'bg-cyan-900/30 border-cyan-700/50',
+        defaultData: { token: '' },
+      },
     ],
   },
   {
@@ -62,11 +81,27 @@ const SECTIONS = [
       },
       {
         type: 'aiTextNode',
-        label: 'AI Text',
+        label: 'AI Agent',
         icon: BrainCircuit,
         color: 'text-pink-400',
         bg: 'bg-pink-900/30 border-pink-700/50',
-        defaultData: { prompt: '' },
+        defaultData: { prompt: '', sessionId: '{{input.chat_id}}' },
+      },
+      {
+        type: 'telegramActionNode',
+        label: 'Telegram Send',
+        icon: Send,
+        color: 'text-cyan-400',
+        bg: 'bg-cyan-900/30 border-cyan-700/50',
+        defaultData: { token: '', chatId: '{{input.chat_id}}', message: '{{input.text}}' },
+      },
+      {
+        type: 'storageNode',
+        label: 'Storage',
+        icon: Database,
+        color: 'text-orange-400',
+        bg: 'bg-orange-900/30 border-orange-700/50',
+        defaultData: { operation: 'GET', key: '', value: '' },
       },
     ],
   },
@@ -88,7 +123,7 @@ const SECTIONS = [
       },
       {
         type: 'httpNode',
-        label: 'Telegram Message',
+        label: 'Telegram (HTTP)',
         icon: MessageSquare,
         color: 'text-cyan-400',
         bg: 'bg-cyan-900/30 border-cyan-700/50',

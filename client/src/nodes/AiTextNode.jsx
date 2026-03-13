@@ -3,7 +3,8 @@ import { Handle, Position, useReactFlow } from 'reactflow';
 import { BrainCircuit, ChevronDown, ChevronUp, Play, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
 import axios from 'axios';
 
-// Suggestions shown in the combobox dropdown; user can also type any custom model ID
+// Suggestions shown in the combobox dropdown; user can also type any custom model ID.
+// Models prefixed with "ollama/" are routed to local Ollama (http://localhost:11434).
 const MODEL_SUGGESTIONS = [
   'gpt-4o-mini',
   'gpt-4o',
@@ -13,6 +14,10 @@ const MODEL_SUGGESTIONS = [
   'google/gemini-2.0-flash-exp:free',
   'anthropic/claude-3-haiku',
   'meta-llama/llama-3.1-8b-instruct:free',
+  'ollama/llama3',
+  'ollama/mistral',
+  'ollama/codellama',
+  'ollama/phi3',
 ];
 
 const DEFAULT_SYSTEM = 'You are a helpful assistant.';
@@ -119,8 +124,29 @@ export default function AiTextNode({ id, data, selected }) {
               {MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
             </datalist>
             <p className="text-xs text-slate-600 mt-1">
-              Select a preset or type any OpenRouter model ID
+              OpenRouter ID, or <code className="text-pink-400/60">ollama/model-name</code> for local inference
             </p>
+          </div>
+
+          {/* Session ID (memory) */}
+          <div>
+            <label className="block text-xs text-slate-400 mb-1 font-medium">
+              Session ID
+              <span className="ml-1.5 text-slate-600 font-normal normal-case">
+                — links memory to a user; leave blank to disable
+              </span>
+            </label>
+            <input
+              className="nodrag w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-pink-500 placeholder-slate-600"
+              placeholder="{{input.chat_id}}"
+              value={data.sessionId || ''}
+              onChange={(e) => updateData('sessionId', e.target.value)}
+            />
+            {(data.sessionId || '').trim() && (
+              <p className="text-xs text-emerald-500/70 mt-1">
+                Memory enabled — conversation history is stored per session
+              </p>
+            )}
           </div>
 
           {/* System Prompt */}

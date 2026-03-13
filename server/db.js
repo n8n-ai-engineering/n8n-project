@@ -12,6 +12,10 @@ const db = low(adapter);
 db.defaults({
   workflows: [],
   settings: { apiKey: '', baseUrl: '' },
+  // Conversation memory: { [sessionId]: [ {role, content}, ... ] }
+  memory: {},
+  // Key-value storage for StorageNode
+  storage: {},
 }).write();
 
 module.exports = db;

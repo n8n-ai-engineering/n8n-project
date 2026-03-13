@@ -36,6 +36,9 @@ import CodeNode from '../nodes/CodeNode.jsx';
 import WebhookNode from '../nodes/WebhookNode.jsx';
 import AiTextNode from '../nodes/AiTextNode.jsx';
 import ScheduleNode from '../nodes/ScheduleNode.jsx';
+import TelegramTriggerNode from '../nodes/TelegramTriggerNode.jsx';
+import TelegramActionNode from '../nodes/TelegramActionNode.jsx';
+import StorageNode from '../nodes/StorageNode.jsx';
 
 const nodeTypes = {
   startNode: StartNode,
@@ -44,6 +47,9 @@ const nodeTypes = {
   httpNode: HttpNode,
   codeNode: CodeNode,
   aiTextNode: AiTextNode,
+  telegramTriggerNode: TelegramTriggerNode,
+  telegramActionNode: TelegramActionNode,
+  storageNode: StorageNode,
 };
 
 const getNextId = () => `node_${Date.now()}`;
@@ -195,6 +201,9 @@ function FlowEditor() {
   const [loadingWorkflow, setLoadingWorkflow] = useState(true);
   const [loadError, setLoadError] = useState('');
 
+  const [isActive, setIsActive] = useState(false);
+  const [toggling, setToggling] = useState(false);
+
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState(null);
   const [runError, setRunError] = useState(null);
@@ -210,6 +219,7 @@ function FlowEditor() {
         const { data } = await axios.get(`/api/workflows/${id}`);
         if (cancelled) return;
         setWorkflowName(data.name || 'Untitled Workflow');
+        setIsActive(!!data.isActive);
         setNodes(data.nodes || []);
         setEdges(data.edges || []);
       } catch (err) {
@@ -303,6 +313,18 @@ function FlowEditor() {
     URL.revokeObjectURL(url);
   }, [workflowName, nodes, edges]);
 
+  const handleToggleActive = useCallback(async () => {
+    setToggling(true);
+    try {
+      const { data } = await axios.patch(`/api/workflows/${id}/toggle`);
+      setIsActive(!!data.isActive);
+    } catch {
+      // ignore
+    } finally {
+      setToggling(false);
+    }
+  }, [id]);
+
   // Loading / error states
   if (loadingWorkflow) {
     return (
@@ -349,6 +371,31 @@ function FlowEditor() {
 
           {/* Right: actions */}
           <div className="flex items-center gap-2.5 shrink-0">
+            {/* Active toggle */}
+            <button
+              onClick={handleToggleActive}
+              disabled={toggling}
+              title={isActive ? 'Workflow is active — click to deactivate' : 'Workflow is inactive — click to activate'}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition-all disabled:opacity-50 text-xs font-semibold
+                         bg-transparent hover:bg-slate-700
+                         border-slate-600 hover:border-slate-500"
+            >
+              <div
+                className={`w-8 h-4 rounded-full relative transition-colors duration-200 ${
+                  isActive ? 'bg-emerald-500' : 'bg-slate-600'
+                }`}
+              >
+                <div
+                  className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform duration-200 ${
+                    isActive ? 'translate-x-4' : 'translate-x-0.5'
+                  }`}
+                />
+              </div>
+              <span className={isActive ? 'text-emerald-400' : 'text-slate-500'}>
+                {toggling ? '…' : isActive ? 'Active' : 'Inactive'}
+              </span>
+            </button>
+
             {saveMsg && (
               <span className={`text-xs font-medium ${saveMsg === 'Saved!' ? 'text-emerald-400' : 'text-red-400'}`}>
                 {saveMsg}

@@ -7,6 +7,7 @@ const db = require('./db');
 const { getOpenAIClient } = require('./openai-client');
 const { runWorkflow } = require('./engine');
 const { initAllJobs, registerWorkflowJobs, cancelWorkflowJobs } = require('./scheduler');
+const { initAllBots, activateWorkflowBot, deactivateWorkflowBot } = require('./telegram');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -42,11 +43,12 @@ app.post('/api/settings', (req, res) => {
 app.get('/api/workflows', (req, res) => {
   const list = db
     .get('workflows')
-    .map(({ id, name, createdAt, updatedAt, nodes, edges }) => ({
+    .map(({ id, name, createdAt, updatedAt, isActive, nodes, edges }) => ({
       id,
       name,
       createdAt,
       updatedAt,
+      isActive: !!isActive,
       nodeCount: (nodes || []).length,
       edgeCount: (edges || []).length,
     }))
@@ -62,6 +64,7 @@ app.post('/api/workflows', (req, res) => {
     name: name || 'Untitled Workflow',
     nodes: [],
     edges: [],
+    isActive: false,
     createdAt: now,
     updatedAt: now,
   };
@@ -87,8 +90,9 @@ app.put('/api/workflows/:id', (req, res) => {
 
   db.get('workflows').find({ id: req.params.id }).assign(patch).write();
 
-  // Re-register cron jobs in case schedule nodes changed
+  // Re-register triggers (scheduler and telegram respect isActive internally)
   registerWorkflowJobs(req.params.id);
+  activateWorkflowBot(req.params.id);
 
   res.json(db.get('workflows').find({ id: req.params.id }).value());
 });
@@ -98,8 +102,36 @@ app.delete('/api/workflows/:id', (req, res) => {
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
 
   cancelWorkflowJobs(req.params.id);
+  deactivateWorkflowBot(req.params.id);
   db.get('workflows').remove({ id: req.params.id }).write();
   res.json({ success: true });
+});
+
+// ─────────────────────────────────────────────
+// Toggle active state  PATCH /api/workflows/:id/toggle
+// ─────────────────────────────────────────────
+
+app.patch('/api/workflows/:id/toggle', (req, res) => {
+  const wf = db.get('workflows').find({ id: req.params.id }).value();
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+
+  const newIsActive = !wf.isActive;
+  db.get('workflows')
+    .find({ id: req.params.id })
+    .assign({ isActive: newIsActive, updatedAt: new Date().toISOString() })
+    .write();
+
+  if (newIsActive) {
+    registerWorkflowJobs(req.params.id);
+    activateWorkflowBot(req.params.id);
+    console.log(`[workflow] "${wf.name}" activated`);
+  } else {
+    cancelWorkflowJobs(req.params.id);
+    deactivateWorkflowBot(req.params.id);
+    console.log(`[workflow] "${wf.name}" deactivated`);
+  }
+
+  res.json(db.get('workflows').find({ id: req.params.id }).value());
 });
 
 // ─────────────────────────────────────────────
@@ -225,7 +257,8 @@ app.post('/api/ai-config', async (req, res) => {
 // Start
 // ─────────────────────────────────────────────
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
   initAllJobs();
+  await initAllBots();
 });

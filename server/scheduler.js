@@ -34,6 +34,8 @@ function registerWorkflowJobs(workflowId) {
 
   const wf = db.get('workflows').find({ id: workflowId }).value();
   if (!wf || !wf.nodes) return;
+  // Only run scheduled jobs for active workflows
+  if (!wf.isActive) return;
 
   const scheduleNodes = wf.nodes.filter((n) => n.type === 'scheduleNode');
   if (scheduleNodes.length === 0) return;
